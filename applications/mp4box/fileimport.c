@@ -2133,7 +2133,9 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 	Bool is_isom;
 	GF_ISOSample *samp;
 	Double aligned_to_DTS = 0;
-
+	Bool use_separate_sample_description = GF_FALSE;
+	u32 sample_description_shift = GF_TRUE;
+	
 	if (is_pl) return cat_playlist(dest, fileName, import_flags, force_fps, frames_per_sample, tmp_dir, force_cat, align_timelines, allow_add_in_command);
 
 	if (strchr(fileName, '*')) return cat_multiple_files(dest, fileName, import_flags, force_fps, frames_per_sample, tmp_dir, force_cat, align_timelines, allow_add_in_command);
@@ -2267,25 +2269,51 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 			tk_id = gf_isom_get_track_id(orig, i+1);
 			skip_lang_test = 0;
 		}
+
 		dst_tk = gf_isom_get_track_by_id(dest, tk_id);
-
-
 		if (dst_tk) {
-			if (mtype != gf_isom_get_media_type(dest, dst_tk))
+			// if we found a track with the same track id in the current concatenation result
+			// this means the current file to be concatenated is not the first one
+			if (mtype != gf_isom_get_media_type(dest, dst_tk)) {
+				// we cannot use the track that has the same track id
 				dst_tk = 0;
-			else if (gf_isom_get_media_subtype(dest, dst_tk, 1) != gf_isom_get_media_subtype(orig, i+1, 1))
-				dst_tk = 0;
+			} else {
+				u32 dest_stype = gf_isom_get_media_subtype(dest, dst_tk, 1);
+				u32 orig_stype = gf_isom_get_media_subtype(orig, i+1, 1);
+				if (dest_stype != orig_stype) {
+					/* if one of the track is encrypted, we check if the non-encrypted types match */
+					if (gf_isom_is_media_encrypted(orig, i+1, 1)) {
+						gf_isom_get_original_format_type(orig, i+1, 1, &orig_stype);
+					}
+					if (gf_isom_is_media_encrypted(dest, dst_tk, 1)) {
+						gf_isom_get_original_format_type(dest, dst_tk, 1, &dest_stype);
+					}
+					if (dest_stype != orig_stype) {
+						// we cannot use the track that has the same track id
+						dst_tk = 0;
+					} else {
+						// the tracks have the same track id and only differ because of encryption
+						// we keep the selected track as the destination for the concatenation
+					}
+				}
+			}
 		}
 
 		if (!dst_tk) {
+			// either this is the first file that is being concatenated
+			// or the track in the current output that has the same track id as in the current file
+			// does not have a compatible sample description
+			// we look for a track with a matching sample description even if it does not have the same track id
 			for (j=0; j<gf_isom_get_track_count(dest); j++) {
 				if (mtype != gf_isom_get_media_type(dest, j+1)) continue;
 				if (gf_isom_is_same_sample_description(orig, i+1, 0, dest, j+1, 0)) {
+					// we found a track that has the same sample description
 					if (gf_isom_is_video_subtype(mtype) ) {
 						u32 w, h, ow, oh;
 						gf_isom_get_visual_info(orig, i+1, 1, &ow, &oh);
 						gf_isom_get_visual_info(dest, j+1, 1, &w, &h);
 						if ((ow==w) && (oh==h)) {
+							// found a video track that matches also width and height
 							dst_tk = j+1;
 							break;
 						}
@@ -2309,10 +2337,13 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 							lang_dst = 0;
 						}
 						if (lang_dst==lang_src) {
+							// found an audio track that also matches the same language
 							dst_tk = j+1;
 							break;
 						}
 					} else {
+						// for all other types than audio or video,
+						// as long as the sample description is the same we are fine
 						dst_tk = j+1;
 						break;
 					}
@@ -2321,14 +2352,39 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 		}
 
 		if (dst_tk) {
+			// the file to be contatenated is not the first one,
+			// we found a track that has a matching sample description
 			u32 found_dst_tk = dst_tk;
 			u32 stype = gf_isom_get_media_subtype(dest, dst_tk, 1);
+			u32 orig_stype = gf_isom_get_media_subtype(orig, i+1, 1);
+			/* if one of the track is encrypted, we need to retrieve the unencrypted type */
+			if (gf_isom_is_media_encrypted(orig, i+1, 1)) {
+				gf_isom_get_original_format_type(orig, i+1, 1, &orig_stype);
+				use_separate_sample_description = GF_TRUE;
+				// if the file to concatenate is encrypted,
+				// no need to duplicate the sample description
+				sample_description_shift = GF_FALSE;
+			}
+			if (gf_isom_is_media_encrypted(dest, dst_tk, 1)) {
+				gf_isom_get_original_format_type(dest, dst_tk, 1, &stype);
+				if (use_separate_sample_description) {
+					use_separate_sample_description = GF_FALSE;
+				} else {
+					use_separate_sample_description = GF_TRUE;
+				}
+				// if the destination is encrypted,
+				// no need to duplicate the sample description
+				sample_description_shift = GF_FALSE;
+			}
 			/*we MUST have the same codec*/
-			if (gf_isom_get_media_subtype(orig, i+1, 1) != stype) dst_tk = 0;
+			if (gf_isom_get_media_subtype(orig, i+1, 1) != stype) {
+				// Is this a redundant check? we cannot have a different type if we found a matching destination track????
+				dst_tk = 0;
+			}
 			/*we only support cat with the same number of sample descriptions*/
 			if (gf_isom_get_sample_description_count(orig, i+1) != gf_isom_get_sample_description_count(dest, dst_tk)) dst_tk = 0;
-			/*if not forcing cat, check the media codec config is the same*/
-			if (!gf_isom_is_same_sample_description(orig, i+1, 0, dest, dst_tk, 0)) {
+			/*if not forcing cat and not concatenating encrypted/non-encrypted files, check the media codec config is the same*/
+			if (!use_separate_sample_description && !gf_isom_is_same_sample_description(orig, i+1, 0, dest, dst_tk, 0)) {
 				dst_tk = 0;
 			}
 			/*we force the same visual resolution*/
@@ -2342,8 +2398,35 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 			}
 
 			if (!dst_tk) {
+				// this is the first file to be processed or the first file to contribute to this destination track
+				if (sample_description_shift) {
+					// we shift the sample description index by duplicating the sample description
+					// later, when the encrypted file is processed, the first sample description will be overriden by the encrypted one
+					u32 new_di;
+					dst_tk = found_dst_tk;
+					e = gf_isom_clone_sample_description(dest, dst_tk, orig, i+1, 1, NULL, NULL, &new_di);
+					if (e) goto err_exit;
+				}
+				if (use_separate_sample_description) {
+					// this is not the first file contributing to this track and this is a clear/encrypted concatenation
+					dst_tk = found_dst_tk;
+					if (!gf_isom_is_media_encrypted(dest, dst_tk, 1)) {
+						// if the first sample description is not the encrypted one,
+						// we need to replace it with the encrypted one first
+						u32 new_di;
+						// we start by removing the sample description that was duplicated when the first file was concatenated
+						e = gf_isom_remove_sample_description(dest, dst_tk, 1);
+						if (e) goto err_exit;
+						// then we clone the encrypted sample description from the file to be concatenated into the destination
+						e = gf_isom_clone_sample_description(dest, dst_tk, orig, i+1, 1, NULL, NULL, &new_di);
+						if (e) goto err_exit;
+						// and finally swap the sample entries so that the sample description index of the clear sample remains correct
+						e = gf_isom_swap_sample_descriptions(dest, dst_tk, 1, new_di);
+						if (e) goto err_exit;
+					}
+				}
 				/*merge AVC config if possible*/
-				if ((stype == GF_ISOM_SUBTYPE_AVC_H264)
+				else if ((stype == GF_ISOM_SUBTYPE_AVC_H264)
 				        || (stype == GF_ISOM_SUBTYPE_AVC2_H264)
 				        || (stype == GF_ISOM_SUBTYPE_AVC3_H264)
 				        || (stype == GF_ISOM_SUBTYPE_AVC4_H264) ) {
@@ -2371,6 +2454,13 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 			if (e) goto err_exit;
 			gf_isom_clone_pl_indications(orig, dest);
 			new_track = 1;
+
+			if (sample_description_shift) {
+				// we duplicate the sample description to override it with the encrypted one when it will come
+				u32 new_di;
+				e = gf_isom_clone_sample_description(dest, dst_tk, orig, i+1, 1, NULL, NULL, &new_di);
+				if (e) goto err_exit;
+			}
 
 			if (align_timelines) {
 				u32 max_timescale = 0;
@@ -2445,7 +2535,8 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 			samp->CTS_Offset =  (u32) (samp->CTS_Offset * ts_scale);
 
 			if (gf_isom_is_self_contained(orig, i+1, di)) {
-				e = gf_isom_add_sample(dest, dst_tk, di, samp);
+				// apply sample description shift if needed
+				e = gf_isom_add_sample(dest, dst_tk, sample_description_shift?di+1:di, samp);
 			} else {
 				u64 offset;
 				GF_ISOSample *s = gf_isom_get_sample_info(orig, i+1, j+1, &di, &offset);
