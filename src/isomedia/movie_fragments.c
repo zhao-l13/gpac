@@ -2154,10 +2154,16 @@ GF_EXPORT
 GF_Err gf_isom_fragment_add_sai(GF_ISOFile *output, GF_ISOFile *input, u32 TrackID, u32 SampleNum)
 {
 	u32 trackNum;
+	u32 di;
+	u64 offset;
+	
 	GF_Err e = GF_OK;
 
 	trackNum = gf_isom_get_track_by_id(input, TrackID);
-	if (gf_isom_is_cenc_media(input, trackNum, 1)) {
+	gf_isom_get_sample_info(input, trackNum, SampleNum, &di, &offset);
+	if (!di) return GF_BAD_PARAM;
+
+	if (gf_isom_is_cenc_media(input, trackNum, di)) {
 		GF_CENCSampleAuxInfo *sai;
 		GF_TrackFragmentBox  *traf = GetTraf(output, TrackID);
 		GF_TrackBox  *src_trak = gf_isom_get_track_from_file(input, TrackID);
@@ -2169,7 +2175,8 @@ GF_Err gf_isom_fragment_add_sai(GF_ISOFile *output, GF_ISOFile *input, u32 Track
 		if (!traf)  return GF_BAD_PARAM;
 
 		sai = NULL;
-		gf_isom_get_sample_cenc_info(input, trackNum, SampleNum, &IsEncrypted, &IV_size, NULL, NULL, NULL, NULL, NULL);
+		e = gf_isom_get_sample_cenc_info(input, trackNum, SampleNum, &IsEncrypted, &IV_size, NULL, NULL, NULL, NULL, NULL);
+		if (e) return e;
 		e = gf_isom_cenc_get_sample_aux_info(input, trackNum, SampleNum, &sai, &boxType);
 		if (e) return e;
 		//no associated SAI (constant IV and no subsample)

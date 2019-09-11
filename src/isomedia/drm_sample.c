@@ -1288,6 +1288,8 @@ GF_Err gf_isom_cenc_get_sample_aux_info(GF_ISOFile *the_file, u32 trackNumber, u
 	u8 IV_size, constant_IV_size;
 	bin128 constant_IV;
 	u32 is_Protected, scheme_type=-1;
+	u32 di;
+	u64 offset;
 
 	trak = gf_isom_get_track_from_file(the_file, trackNumber);
 	if (!trak) return GF_BAD_PARAM;
@@ -1318,7 +1320,9 @@ GF_Err gf_isom_cenc_get_sample_aux_info(GF_ISOFile *the_file, u32 trackNumber, u
 		gf_isom_cenc_samp_aux_info_del(*sai);
 		*sai = NULL;
 	}
-	gf_isom_get_cenc_info(the_file, trackNumber, 1, NULL, &scheme_type, NULL, NULL);
+	gf_isom_get_sample_info(the_file, trackNumber, sampleNumber, &di, &offset);
+	if (!di) return GF_BAD_PARAM;
+	gf_isom_get_cenc_info(the_file, trackNumber, di, NULL, &scheme_type, NULL, NULL);
 	gf_isom_get_sample_cenc_info_ex(trak, NULL, senc, sampleNumber, &is_Protected, &IV_size, NULL, NULL, NULL, &constant_IV_size, &constant_IV);
 
 	/*get sample auxiliary information by saiz/saio rather than by parsing senc box*/
@@ -1392,6 +1396,7 @@ void gf_isom_cenc_get_default_info_ex(GF_TrackBox *trak, u32 sampleDescriptionIn
 		if (skip_byte_block) *skip_byte_block = sinf->info->tenc->skip_byte_block;
 
 	} else {
+		return;
 		if (! trak->moov->mov->is_smooth) {
 			trak->moov->mov->is_smooth = GF_TRUE;
 			GF_LOG(GF_LOG_WARNING, GF_LOG_CONTAINER, ("[iso file] senc box without tenc, assuming MS smooth+piff\n"));
