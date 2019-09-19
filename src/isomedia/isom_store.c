@@ -1212,14 +1212,14 @@ GF_Err DoInterleave(MovieWriter *mw, GF_List *writers, GF_BitStream *bs, u8 Emul
 						}
 					} else {
 						forceNewChunk = tmp->chunkDur ? 0 : 1;
+						//small check for first 2 samples (DTS = 0)
+						if (tmp->sampleNumber == 2 && !tmp->chunkDur) {
+							forceNewChunk = 0;
+						}
 					}
+
 					//OK, we can write this track
 					curWriter = tmp;
-
-					//small check for first 2 samples (DTS = 0)
-					if (tmp->sampleNumber == 2 && !tmp->chunkDur) {
-						forceNewChunk = 0;
-					}
 
 					chunk_prev_dur = tmp->chunkDur;
 					//FIXME we do not apply patch in test mode for now since this breaks all our hashes, remove this
