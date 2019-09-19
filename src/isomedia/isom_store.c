@@ -1204,6 +1204,11 @@ GF_Err DoInterleave(MovieWriter *mw, GF_List *writers, GF_BitStream *bs, u8 Emul
 						//in case the sample is longer than InterleaveTime
 						if (!tmp->chunkDur) {
 							forceNewChunk = 1;
+
+							//hackyhackyhack keep old mode way
+							if (tmp->sampleNumber == 2 && movie->drop_date_version_info) {
+								forceNewChunk = 0;
+							}
 						} else {
 							//this one is full. go to next one (exit the loop)
 							tmp->chunkDur = 0;
