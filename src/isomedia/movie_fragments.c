@@ -2156,7 +2156,7 @@ GF_Err gf_isom_fragment_add_sai(GF_ISOFile *output, GF_ISOFile *input, u32 Track
 	u32 trackNum;
 	u32 di;
 	u64 offset;
-	
+
 	GF_Err e = GF_OK;
 
 	trackNum = gf_isom_get_track_by_id(input, TrackID);

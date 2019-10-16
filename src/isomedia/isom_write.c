@@ -3493,7 +3493,7 @@ GF_Err gf_isom_swap_sample_descriptions(GF_ISOFile *movie, u32 trackNumber, u32 
 {
 	GF_TrackBox *trak;
 	GF_Err e;
-	
+
 	e = CanAccessMovie(movie, GF_ISOM_OPEN_WRITE);
 	if (e) return e;
 	trak = gf_isom_get_track_from_file(movie, trackNumber);
