@@ -1140,6 +1140,10 @@ GF_Err gf_isom_sample_set_dep_info(GF_ISOFile *file, u32 track, u32 sampleNumber
 //copies all sample dependency, subSample and sample group information from the given sampleNumber in source file to the last added sample in dest file
 GF_Err gf_isom_copy_sample_info(GF_ISOFile *dst, u32 dst_track, GF_ISOFile *src, u32 src_track, u32 sampleNumber);
 
+// copies encryption sample auxiliary information
+GF_Err gf_isom_copy_cenc_sample_auxiliary_info(GF_ISOFile *dst, u32 dst_track, GF_ISOFile *src, u32 src_track, u32 sampleNumber, u32 sampleLength, Bool is_nalu_video, Bool has_seig);
+GF_Err gf_isom_cenc_add_clear_sample(GF_ISOFile *dst, u32 dst_track, u32 sampleNumber, u32 sampleLength, Bool use_subsamples, Bool has_seig);
+
 /*Add sync shadow sample to a track.
 - There must be a regular sample with the same DTS.
 - Sync Shadow samples MUST be RAP
@@ -1496,9 +1500,11 @@ if keep_pssh, all pssh boxes will be kept
 fragment information (mvex) is not kept*/
 GF_Err gf_isom_clone_movie(GF_ISOFile *orig_file, GF_ISOFile *dest_file, Bool clone_tracks, Bool keep_hint_tracks, Bool keep_pssh, Bool create_mvex_after_traks);
 
-/*returns true if same set of sample description in both tracks - this does include self-contained checking
-and reserved flags. The specific media cfg (DSI & co) is not analysed, only
-a brutal memory comparaison is done*/
+/*returns true if in both tracks:
+ - either the corresponding sample descriptions indicated by the given index values are the same
+ - or the entire sets of sample descriptions are the same, if the index values are null
+ This does include self-contained checking and reserved flags.
+ The specific media cfg (DSI & co) is not analysed, only a brutal memory comparaison is done*/
 Bool gf_isom_is_same_sample_description(GF_ISOFile *f1, u32 tk1, u32 sdesc_index1, GF_ISOFile *f2, u32 tk2, u32 sdesc_index2);
 
 GF_Err gf_isom_set_JPEG2000(GF_ISOFile *mov, Bool set_on);

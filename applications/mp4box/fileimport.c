@@ -2120,6 +2120,189 @@ static u32 merge_hevc_config(GF_ISOFile *dest, u32 tk_id, GF_ISOFile *orig, u32 
 
 GF_Err cat_playlist(GF_ISOFile *dest, char *playlistName, u32 import_flags, Double force_fps, u32 frames_per_sample, char *tmp_dir, Bool force_cat, Bool align_timelines, Bool allow_add_in_command);
 
+Bool check_avc_concatenability(GF_ISOFile *orig, u32 orig_tk, GF_ISOFile *dest, u32 dest_tk)
+{
+	Bool is_same_avc_config = GF_TRUE;
+	GF_AVCConfig *avc_src, *avc_dst;
+	avc_src = gf_isom_avc_config_get(orig, orig_tk, 1);
+	avc_dst = gf_isom_avc_config_get(dest, dest_tk, 1);
+
+	if (avc_src->AVCLevelIndication!=avc_dst->AVCLevelIndication) {
+		is_same_avc_config = GF_FALSE;
+	} else if (avc_src->AVCProfileIndication!=avc_dst->AVCProfileIndication) {
+		is_same_avc_config = GF_FALSE;
+	} else {
+		if (!merge_parameter_set(avc_src->sequenceParameterSets, avc_dst->sequenceParameterSets, "SPS")) {
+			is_same_avc_config = GF_FALSE;
+		} else if (!merge_parameter_set(avc_src->pictureParameterSets, avc_dst->pictureParameterSets, "PPS")) {
+			is_same_avc_config = GF_FALSE;
+		}
+	}
+	gf_odf_avc_cfg_del(avc_src);
+	gf_odf_avc_cfg_del(avc_dst);
+	return is_same_avc_config;
+}
+
+Bool check_hevc_concatenability(GF_ISOFile *orig, u32 orig_tk, GF_ISOFile *dest, u32 dest_tk)
+{
+	Bool is_same_hevc_cfg = GF_TRUE;
+	GF_HEVCConfig *hevc_src, *hevc_dst;
+	hevc_src = gf_isom_hevc_config_get(orig, orig_tk, 1);
+	hevc_dst = gf_isom_hevc_config_get(dest, dest_tk, 1);
+
+	if (hevc_src->profile_idc != hevc_dst->profile_idc) {
+		is_same_hevc_cfg = GF_FALSE;
+	} else if (hevc_src->level_idc != hevc_dst->level_idc) {
+		is_same_hevc_cfg = GF_FALSE;
+	} else if (hevc_src->general_profile_compatibility_flags != hevc_dst->general_profile_compatibility_flags ) {
+		is_same_hevc_cfg = GF_FALSE;
+	} else {
+		u32 i;
+		for (i=0; i<gf_list_count(hevc_src->param_array); i++) {
+			u32 k;
+			GF_HEVCParamArray *src_ar = gf_list_get(hevc_src->param_array, i);
+			for (k=0; k<gf_list_count(hevc_dst->param_array); k++) {
+				GF_HEVCParamArray *dst_ar = gf_list_get(hevc_dst->param_array, k);
+				if (dst_ar->type==src_ar->type) {
+					if (!merge_parameter_set(src_ar->nalus, dst_ar->nalus, "SPS"))
+						is_same_hevc_cfg = GF_FALSE;
+					break;
+				}
+			}
+		}
+	}
+	gf_odf_hevc_cfg_del(hevc_src);
+	gf_odf_hevc_cfg_del(hevc_dst);
+	return is_same_hevc_cfg;
+}
+
+Bool is_avc_type(u32 stype) {
+	return ((stype == GF_ISOM_SUBTYPE_AVC_H264) || (stype == GF_ISOM_SUBTYPE_AVC2_H264) ||
+			(stype == GF_ISOM_SUBTYPE_AVC3_H264) || (stype == GF_ISOM_SUBTYPE_AVC4_H264));
+}
+
+Bool is_hevc_type(u32 stype) {
+	return ((stype == GF_ISOM_SUBTYPE_HVC1) || (stype == GF_ISOM_SUBTYPE_HEV1) ||
+			(stype == GF_ISOM_SUBTYPE_HVC2) || (stype == GF_ISOM_SUBTYPE_HEV2));
+}
+
+Bool check_concatenability(GF_ISOFile *orig, u32 orig_tk, GF_ISOFile *dest, u32 dest_tk, Bool skip_lang_test) {
+	u32 orig_mtype = gf_isom_get_media_type(orig, orig_tk);
+	u32 dest_mtype = gf_isom_get_media_type(dest, dest_tk);
+	u32 orig_stype = gf_isom_get_media_subtype(orig, orig_tk, 1);
+	u32 dest_stype = gf_isom_get_media_subtype(dest, dest_tk, 1);
+	Bool orig_encrypted = gf_isom_is_media_encrypted(orig, orig_tk, 1);
+	Bool dest_encrypted = gf_isom_is_media_encrypted(dest, dest_tk, 1);
+
+	if (orig_mtype != dest_mtype) {
+		return GF_FALSE;
+	}
+
+	if (gf_isom_get_sample_description_count(orig, orig_tk) > 1) {
+		return GF_FALSE;
+	}
+
+	if (orig_encrypted) {
+		gf_isom_get_original_format_type(orig, orig_tk, 1, &orig_stype);
+		if (!dest_encrypted) {
+			// if the first sample description of the dest is not encrypted,
+			// we cannot concatenate with this encrypted track
+			// because this would require modifying already concatenated samples
+			return GF_FALSE;
+		}
+	}
+
+	if (dest_encrypted) {
+		gf_isom_get_original_format_type(dest, dest_tk, 1, &dest_stype);
+	}
+
+	if (dest_stype != orig_stype) {
+		return GF_FALSE;
+	}
+
+	if (gf_isom_is_video_subtype(orig_mtype)) {
+		u32 w, h, ow, oh;
+		gf_isom_get_visual_info(orig, orig_tk, 1, &ow, &oh);
+		gf_isom_get_visual_info(dest, dest_tk, 1, &w, &h);
+		if ((ow!=w) || (oh!=h)) {
+			return GF_FALSE;
+		}
+	}
+	if (!skip_lang_test && (orig_mtype==GF_ISOM_MEDIA_AUDIO)) {
+		u32 lang_src, lang_dst;
+		char *lang = NULL;
+		gf_isom_get_media_language(orig, orig_tk, &lang);
+		if (lang) {
+			lang_src = GF_4CC(lang[0], lang[1], lang[2], lang[3]);
+			gf_free(lang);
+		} else {
+			lang_src = 0;
+		}
+		gf_isom_get_media_language(dest, dest_tk, &lang);
+		if (lang) {
+			lang_dst = GF_4CC(lang[0], lang[1], lang[2], lang[3]);
+			gf_free(lang);
+		} else {
+			lang_dst = 0;
+		}
+		if (lang_dst!=lang_src) {
+			return GF_FALSE;
+		}
+	}
+	if (orig_encrypted && dest_encrypted) {
+		if (gf_isom_is_cenc_media(orig, orig_tk, 1) && gf_isom_is_cenc_media(dest, dest_tk, 1)) {
+			u32 orig_format;
+			u32 orig_scheme_type;
+			u32 orig_scheme_version;
+			u32 orig_iv_length;
+			u32 dest_format;
+			u32 dest_scheme_type;
+			u32 dest_scheme_version;
+			u32 dest_iv_length;
+			gf_isom_get_cenc_info(orig, orig_tk, 1, &orig_format, &orig_scheme_type, &orig_scheme_version, &orig_iv_length);
+			gf_isom_get_cenc_info(dest, dest_tk, 1, &dest_format, &dest_scheme_type, &dest_scheme_version, &dest_iv_length);
+			if (orig_format != dest_format || orig_scheme_type != dest_scheme_type ||
+				orig_scheme_version != dest_scheme_version || orig_iv_length != dest_iv_length) {
+				return GF_FALSE;
+			}
+			if (gf_isom_has_cenc_sample_group(orig, orig_tk) != gf_isom_has_cenc_sample_group(dest, dest_tk)) {
+				return GF_FALSE;
+			}
+		}
+	}
+	if (is_avc_type(orig_stype)) {
+		check_avc_concatenability(orig, orig_tk, dest, dest_tk);
+	} else if (is_hevc_type(orig_stype)) {
+		check_hevc_concatenability(orig, orig_tk, dest, dest_tk);
+	} else if (!gf_isom_is_same_sample_description(orig, orig_tk, 1, dest, dest_tk, 1)) {
+		return GF_FALSE;
+	}
+	return GF_TRUE;
+}
+
+Bool is_mtype_concatenable(u32 mtype)
+{
+	switch (mtype) {
+	case GF_ISOM_MEDIA_HINT:
+	case GF_ISOM_MEDIA_OD:
+	case GF_ISOM_MEDIA_FLASH:
+		return GF_FALSE;
+	}
+	return GF_TRUE;
+}
+
+Bool is_mtype_dur_special(u32 mtype)
+{
+	switch (mtype) {
+	case GF_ISOM_MEDIA_TEXT:
+	case GF_ISOM_MEDIA_SUBT:
+	case GF_ISOM_MEDIA_MPEG_SUBT:
+	case GF_ISOM_MEDIA_SCENE:
+		return GF_TRUE;
+	}
+	return GF_FALSE;
+}
+
 GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Double force_fps, u32 frames_per_sample, char *tmp_dir, Bool force_cat, Bool align_timelines, Bool allow_add_in_command, Bool is_pl)
 {
 	u32 i, j, count, nb_tracks, nb_samp, nb_done;
@@ -2133,8 +2316,7 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 	Bool is_isom;
 	GF_ISOSample *samp;
 	Double aligned_to_DTS = 0;
-	Bool use_separate_sample_description = GF_FALSE;
-	u32 sample_description_shift = GF_TRUE;
+	u32 stsd_only = GF_FALSE;
 	
 	if (is_pl) return cat_playlist(dest, fileName, import_flags, force_fps, frames_per_sample, tmp_dir, force_cat, align_timelines, allow_add_in_command);
 
@@ -2146,8 +2328,15 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 		multi_cat = &multi_cat[1];
 	}
 	opts = strchr(fileName, ':');
-	if (opts && (opts[1]=='\\'))
-		opts = strchr(fileName, ':');
+	if (opts) {
+		if (opts[1]=='\\') {
+			opts = strchr(fileName, ':');
+		} else if (!strncmp(opts+1, "stsd-only", 9)) {
+			stsd_only = GF_TRUE;
+			opts[0] = 0;
+			opts = NULL;
+		}
+	}
 
 	e = GF_OK;
 
@@ -2181,35 +2370,21 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 	nb_tracks = gf_isom_get_track_count(orig);
 	for (i=0; i<nb_tracks; i++) {
 		u32 mtype = gf_isom_get_media_type(orig, i+1);
-		switch (mtype) {
-		case GF_ISOM_MEDIA_HINT:
-		case GF_ISOM_MEDIA_OD:
-		case GF_ISOM_MEDIA_FLASH:
+		if (!is_mtype_concatenable(mtype)) {
 			fprintf(stderr, "WARNING: Track ID %d (type %s) not handled by concatenation - removing from destination\n", gf_isom_get_track_id(orig, i+1), gf_4cc_to_str(mtype));
 			continue;
-		case GF_ISOM_MEDIA_AUDIO:
-		case GF_ISOM_MEDIA_TEXT:
-		case GF_ISOM_MEDIA_SUBT:
-		case GF_ISOM_MEDIA_MPEG_SUBT:
-		case GF_ISOM_MEDIA_VISUAL:
-        case GF_ISOM_MEDIA_AUXV:
-        case GF_ISOM_MEDIA_PICT:
-		case GF_ISOM_MEDIA_SCENE:
-		case GF_ISOM_MEDIA_OCR:
-		case GF_ISOM_MEDIA_OCI:
-		case GF_ISOM_MEDIA_IPMP:
-		case GF_ISOM_MEDIA_MPEGJ:
-		case GF_ISOM_MEDIA_MPEG7:
-		default:
+		} else {
 			/*only cat self-contained files*/
 			if (gf_isom_is_self_contained(orig, i+1, 1)) {
-				nb_samp+= gf_isom_get_sample_count(orig, i+1);
+				if (!stsd_only) {
+					nb_samp+= gf_isom_get_sample_count(orig, i+1);
+				}
 				break;
 			}
 			break;
 		}
 	}
-	if (!nb_samp) {
+	if (!nb_samp && !stsd_only) {
 		fprintf(stderr, "No suitable media tracks to cat in %s - skipping\n", fileName);
 		goto err_exit;
 	}
@@ -2238,28 +2413,21 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 		Bool use_ts_dur = 1;
 		Bool merge_edits = 0;
 		Bool new_track = 0;
+		u32 orig_stype;
+		Bool orig_encrypted;
+		Bool dest_encrypted = GF_FALSE;
+		Bool has_seig = GF_FALSE;
+		Bool use_encryption_subsamples = GF_FALSE;
+		u32 desc_index = 1;
 		mtype = gf_isom_get_media_type(orig, i+1);
-		switch (mtype) {
-		case GF_ISOM_MEDIA_HINT:
-		case GF_ISOM_MEDIA_OD:
-		case GF_ISOM_MEDIA_FLASH:
+		if (!is_mtype_concatenable(mtype)) {
 			continue;
-		case GF_ISOM_MEDIA_TEXT:
-		case GF_ISOM_MEDIA_SUBT:
-		case GF_ISOM_MEDIA_MPEG_SUBT:
-		case GF_ISOM_MEDIA_SCENE:
+		}
+		if (is_mtype_dur_special(mtype)) {
 			use_ts_dur = 0;
-		case GF_ISOM_MEDIA_AUDIO:
-		case GF_ISOM_MEDIA_VISUAL:
-        case GF_ISOM_MEDIA_PICT:
-		case GF_ISOM_MEDIA_OCR:
-		case GF_ISOM_MEDIA_OCI:
-		case GF_ISOM_MEDIA_IPMP:
-		case GF_ISOM_MEDIA_MPEGJ:
-		case GF_ISOM_MEDIA_MPEG7:
-		default:
-			if (!gf_isom_is_self_contained(orig, i+1, 1)) continue;
-			break;
+		}
+		if (!gf_isom_is_self_contained(orig, i+1, 1)) {
+			continue;
 		}
 
 		dst_tk = 0;
@@ -2272,179 +2440,46 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 
 		dst_tk = gf_isom_get_track_by_id(dest, tk_id);
 		if (dst_tk) {
-			// if we found a track with the same track id in the current concatenation result
-			// this means the current file to be concatenated is not the first one
-			if (mtype != gf_isom_get_media_type(dest, dst_tk)) {
-				// we cannot use the track that has the same track id
+			// We found a track with the same track id in the destination,
+			// let's check if it is compatible
+			if (!check_concatenability(orig, i+1, dest, dst_tk, skip_lang_test)) {
+				// force new track
 				dst_tk = 0;
-			} else {
-				u32 dest_stype = gf_isom_get_media_subtype(dest, dst_tk, 1);
-				u32 orig_stype = gf_isom_get_media_subtype(orig, i+1, 1);
-				if (dest_stype != orig_stype) {
-					/* if one of the track is encrypted, we check if the non-encrypted types match */
-					if (gf_isom_is_media_encrypted(orig, i+1, 1)) {
-						gf_isom_get_original_format_type(orig, i+1, 1, &orig_stype);
-					}
-					if (gf_isom_is_media_encrypted(dest, dst_tk, 1)) {
-						gf_isom_get_original_format_type(dest, dst_tk, 1, &dest_stype);
-					}
-					if (dest_stype != orig_stype) {
-						// we cannot use the track that has the same track id
-						dst_tk = 0;
-					} else {
-						// the tracks have the same track id and only differ because of encryption
-						// we keep the selected track as the destination for the concatenation
-					}
-				}
 			}
 		}
 
 		if (!dst_tk) {
-			// either this is the first file that is being concatenated
-			// or the track in the current output that has the same track id as in the current file
-			// does not have a compatible sample description
-			// we look for a track with a matching sample description even if it does not have the same track id
+			// either there is no track matching tk_id in the destination
+			// or the track tk_id does not have a compatible type/subtype/sample description
+			// we look for another matching track even if it does not have the same track id
 			for (j=0; j<gf_isom_get_track_count(dest); j++) {
-				if (mtype != gf_isom_get_media_type(dest, j+1)) continue;
-				if (gf_isom_is_same_sample_description(orig, i+1, 0, dest, j+1, 0)) {
-					// we found a track that has the same sample description
-					if (gf_isom_is_video_subtype(mtype) ) {
-						u32 w, h, ow, oh;
-						gf_isom_get_visual_info(orig, i+1, 1, &ow, &oh);
-						gf_isom_get_visual_info(dest, j+1, 1, &w, &h);
-						if ((ow==w) && (oh==h)) {
-							// found a video track that matches also width and height
-							dst_tk = j+1;
-							break;
-						}
-					}
-					/*check language code*/
-					else if (!skip_lang_test && (mtype==GF_ISOM_MEDIA_AUDIO)) {
-						u32 lang_src, lang_dst;
-						char *lang = NULL;
-						gf_isom_get_media_language(orig, i+1, &lang);
-						if (lang) {
-							lang_src = GF_4CC(lang[0], lang[1], lang[2], lang[3]);
-							gf_free(lang);
-						} else {
-							lang_src = 0;
-						}
-						gf_isom_get_media_language(dest, j+1, &lang);
-						if (lang) {
-							lang_dst = GF_4CC(lang[0], lang[1], lang[2], lang[3]);
-							gf_free(lang);
-						} else {
-							lang_dst = 0;
-						}
-						if (lang_dst==lang_src) {
-							// found an audio track that also matches the same language
-							dst_tk = j+1;
-							break;
-						}
-					} else {
-						// for all other types than audio or video,
-						// as long as the sample description is the same we are fine
-						dst_tk = j+1;
-						break;
-					}
+				if (check_concatenability(orig, i+1, dest, j+1, skip_lang_test) || force_cat) {
+					dst_tk = j+1;
+					break;
 				}
 			}
 		}
 
-		if (dst_tk) {
-			// the file to be contatenated is not the first one,
-			// we found a track that has a matching sample description
-			u32 found_dst_tk = dst_tk;
-			u32 stype = gf_isom_get_media_subtype(dest, dst_tk, 1);
-			u32 orig_stype = gf_isom_get_media_subtype(orig, i+1, 1);
-			/* if one of the track is encrypted, we need to retrieve the unencrypted type */
-			if (gf_isom_is_media_encrypted(orig, i+1, 1)) {
-				gf_isom_get_original_format_type(orig, i+1, 1, &orig_stype);
-				use_separate_sample_description = GF_TRUE;
-				// if the file to concatenate is encrypted,
-				// no need to duplicate the sample description
-				sample_description_shift = GF_FALSE;
-			}
-			if (gf_isom_is_media_encrypted(dest, dst_tk, 1)) {
-				gf_isom_get_original_format_type(dest, dst_tk, 1, &stype);
-				if (use_separate_sample_description) {
-					use_separate_sample_description = GF_FALSE;
-				} else {
-					use_separate_sample_description = GF_TRUE;
-				}
-				// if the destination is encrypted,
-				// no need to duplicate the sample description
-				sample_description_shift = GF_FALSE;
-			}
-			/*we MUST have the same codec*/
-			if (gf_isom_get_media_subtype(orig, i+1, 1) != stype) {
-				// Is this a redundant check? we cannot have a different type if we found a matching destination track????
-				dst_tk = 0;
-			}
-			/*we only support cat with the same number of sample descriptions*/
-			if (gf_isom_get_sample_description_count(orig, i+1) != gf_isom_get_sample_description_count(dest, dst_tk)) dst_tk = 0;
-			/*if not forcing cat and not concatenating encrypted/non-encrypted files, check the media codec config is the same*/
-			if (!use_separate_sample_description && !gf_isom_is_same_sample_description(orig, i+1, 0, dest, dst_tk, 0)) {
-				dst_tk = 0;
-			}
-			/*we force the same visual resolution*/
-			else if (gf_isom_is_video_subtype(mtype) ) {
-				u32 w, h, ow, oh;
-				gf_isom_get_visual_info(orig, i+1, 1, &ow, &oh);
-				gf_isom_get_visual_info(dest, dst_tk, 1, &w, &h);
-				if ((ow!=w) || (oh!=h)) {
-					dst_tk = 0;
-				}
-			}
+		orig_encrypted = gf_isom_is_media_encrypted(orig, i+1, 1);
+		orig_stype = gf_isom_get_media_subtype(orig, i+1, 1);
 
-			if (!dst_tk) {
-				// this is the first file to be processed or the first file to contribute to this destination track
-				if (sample_description_shift) {
-					// we shift the sample description index by duplicating the sample description
-					// later, when the encrypted file is processed, the first sample description will be overriden by the encrypted one
-					u32 new_di;
-					dst_tk = found_dst_tk;
-					e = gf_isom_clone_sample_description(dest, dst_tk, orig, i+1, 1, NULL, NULL, &new_di);
-					if (e) goto err_exit;
-				}
-				if (use_separate_sample_description) {
-					// this is not the first file contributing to this track and this is a clear/encrypted concatenation
-					dst_tk = found_dst_tk;
-					if (!gf_isom_is_media_encrypted(dest, dst_tk, 1)) {
-						// if the first sample description is not the encrypted one,
-						// we need to replace it with the encrypted one first
-						u32 new_di;
-						// we start by removing the sample description that was duplicated when the first file was concatenated
-						e = gf_isom_remove_sample_description(dest, dst_tk, 1);
-						if (e) goto err_exit;
-						// then we clone the encrypted sample description from the file to be concatenated into the destination
-						e = gf_isom_clone_sample_description(dest, dst_tk, orig, i+1, 1, NULL, NULL, &new_di);
-						if (e) goto err_exit;
-						// and finally swap the sample entries so that the sample description index of the clear sample remains correct
-						e = gf_isom_swap_sample_descriptions(dest, dst_tk, 1, new_di);
-						if (e) goto err_exit;
-					}
-				}
-				/*merge AVC config if possible*/
-				else if ((stype == GF_ISOM_SUBTYPE_AVC_H264)
-				        || (stype == GF_ISOM_SUBTYPE_AVC2_H264)
-				        || (stype == GF_ISOM_SUBTYPE_AVC3_H264)
-				        || (stype == GF_ISOM_SUBTYPE_AVC4_H264) ) {
-					dst_tk = merge_avc_config(dest, tk_id, orig, i+1, force_cat);
-				}
-#ifndef GPAC_DISABLE_HEVC
-				/*merge HEVC config if possible*/
-				else if ((stype == GF_ISOM_SUBTYPE_HVC1)
-				         || (stype == GF_ISOM_SUBTYPE_HEV1)
-				         || (stype == GF_ISOM_SUBTYPE_HVC2)
-				         || (stype == GF_ISOM_SUBTYPE_HEV2)) {
-					dst_tk = merge_hevc_config(dest, tk_id, orig, i+1, force_cat);
-				}
-#endif /*GPAC_DISABLE_HEVC*/
-				else if (force_cat) {
-					dst_tk = found_dst_tk;
-				}
+		if (dst_tk) {
+			u32 dest_stype = gf_isom_get_media_subtype(dest, dst_tk, 1);
+			if (orig_encrypted) {
+				gf_isom_get_original_format_type(orig, i+1, 1, &orig_stype);
 			}
+			dest_encrypted = gf_isom_is_media_encrypted(dest, dst_tk, 1);
+			if (dest_encrypted) {
+				gf_isom_get_original_format_type(dest, dst_tk, 1, &dest_stype);
+			}
+			if (is_avc_type(dest_stype)) {
+				merge_avc_config(dest, tk_id, orig, i+1, force_cat);
+			}
+#ifndef GPAC_DISABLE_HEVC
+			else if (is_hevc_type(dest_stype)) {
+				merge_hevc_config(dest, tk_id, orig, i+1, force_cat);
+			}
+#endif /*GPAC_DISABLE_HEVC*/
 		}
 
 		/*looks like a new track*/
@@ -2454,13 +2489,6 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 			if (e) goto err_exit;
 			gf_isom_clone_pl_indications(orig, dest);
 			new_track = 1;
-
-			if (sample_description_shift) {
-				// we duplicate the sample description to override it with the encrypted one when it will come
-				u32 new_di;
-				e = gf_isom_clone_sample_description(dest, dst_tk, orig, i+1, 1, NULL, NULL, &new_di);
-				if (e) goto err_exit;
-			}
 
 			if (align_timelines) {
 				u32 max_timescale = 0;
@@ -2488,6 +2516,49 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 			gf_isom_remove_edit_segments(dest, dst_tk);
 		} else {
 			nb_edits = gf_isom_get_edit_segment_count(orig, i+1);
+
+			if (dest_encrypted && !orig_encrypted) {
+				u32 di;
+				e = gf_isom_clone_sample_description(dest, dst_tk, orig, i+1, 1, NULL, NULL, &di);
+				if (e) goto err_exit;
+			}
+		}
+		if (dest_encrypted) {
+			u32 dest_stype;
+			gf_isom_get_original_format_type(dest, dst_tk, 1, &dest_stype);
+			if (gf_isom_has_cenc_sample_group(dest, dst_tk) ) {
+				has_seig = GF_TRUE;
+			}
+			if (is_avc_type(dest_stype)) {
+				use_encryption_subsamples = GF_TRUE;
+			}
+#ifndef GPAC_DISABLE_HEVC
+			/*merge HEVC config if possible*/
+			else if (is_hevc_type(dest_stype)) {
+				use_encryption_subsamples = GF_TRUE;
+			}
+#endif /*GPAC_DISABLE_HEVC*/
+		} else if (orig_encrypted) {
+			if (gf_isom_has_cenc_sample_group(orig, i+1) ) {
+				has_seig = GF_TRUE;
+			}
+			if (is_avc_type(orig_stype)) {
+				use_encryption_subsamples = GF_TRUE;
+			}
+#ifndef GPAC_DISABLE_HEVC
+			/*merge HEVC config if possible*/
+			else if (is_hevc_type(orig_stype)) {
+				use_encryption_subsamples = GF_TRUE;
+			}
+#endif /*GPAC_DISABLE_HEVC*/
+			u32 container_type;
+			e = gf_isom_cenc_get_sample_aux_info(orig, i+1, 0, NULL, &container_type);
+			if (e) goto err_exit;
+
+			e = gf_isom_cenc_allocate_storage(dest, dst_tk, container_type, 0, 0, NULL);
+			if (e) goto err_exit;
+			e = gf_isom_clone_pssh(dest, orig, GF_FALSE);
+			if (e) goto err_exit;
 		}
 
 		dest_track_dur_before_cat = gf_isom_get_media_duration(dest, dst_tk);
@@ -2525,138 +2596,156 @@ GF_Err cat_isomedia_file(GF_ISOFile *dest, char *fileName, u32 import_flags, Dou
 
 		gf_isom_enable_raw_pack(orig, i+1, 2048);
 
+		if (orig_encrypted || !dest_encrypted) {
+			desc_index = 1;
+		} else {
+			desc_index = 2;
+		}
+
 		last_DTS = 0;
 		count = gf_isom_get_sample_count(orig, i+1);
-		for (j=0; j<count; j++) {
-			u32 di;
-			samp = gf_isom_get_sample(orig, i+1, j+1, &di);
-			last_DTS = samp->DTS;
-			samp->DTS =  (u64) (ts_scale * samp->DTS + (new_track ? 0 : insert_dts));
-			samp->CTS_Offset =  (u32) (samp->CTS_Offset * ts_scale);
+		if (!stsd_only) {
+			for (j=0; j<count; j++) {
+				u32 di;
+				samp = gf_isom_get_sample(orig, i+1, j+1, &di);
+				last_DTS = samp->DTS;
+				samp->DTS =  (u64) (ts_scale * samp->DTS + (new_track ? 0 : insert_dts));
+				samp->CTS_Offset =  (u32) (samp->CTS_Offset * ts_scale);
 
-			if (gf_isom_is_self_contained(orig, i+1, di)) {
-				// apply sample description shift if needed
-				e = gf_isom_add_sample(dest, dst_tk, sample_description_shift?di+1:di, samp);
-			} else {
-				u64 offset;
-				GF_ISOSample *s = gf_isom_get_sample_info(orig, i+1, j+1, &di, &offset);
-				e = gf_isom_add_sample_reference(dest, dst_tk, di, samp, offset);
-				gf_isom_sample_del(&s);
-			}
-			if (samp->nb_pack)
-				j+= samp->nb_pack-1;
+				if (gf_isom_is_self_contained(orig, i+1, di)) {
+					e = gf_isom_add_sample(dest, dst_tk, desc_index, samp);
+				} else {
+					u64 offset;
+					GF_ISOSample *s = gf_isom_get_sample_info(orig, i+1, j+1, &di, &offset);
+					e = gf_isom_add_sample_reference(dest, dst_tk, desc_index, samp, offset);
+					gf_isom_sample_del(&s);
+				}
+				if (samp->nb_pack)
+					j+= samp->nb_pack-1;
 
-			gf_isom_sample_del(&samp);
-			if (e) goto err_exit;
+				e = gf_isom_copy_sample_info(dest, dst_tk, orig, i+1, j+1);
+				if (e) goto err_exit;
 
-			e = gf_isom_copy_sample_info(dest, dst_tk, orig, i+1, j+1);
-			if (e) goto err_exit;
-
-			gf_set_progress("Appending", nb_done, nb_samp);
-			nb_done++;
-		}
-		/*scene description and text: compute last sample duration based on original media duration*/
-		if (!use_ts_dur) {
-			insert_dts = gf_isom_get_media_duration(orig, i+1) - last_DTS;
-			gf_isom_set_last_sample_duration(dest, dst_tk, (u32) insert_dts);
-		}
-
-		if (new_track && insert_dts) {
-			u64 media_dur = gf_isom_get_media_duration(orig, i+1);
-			/*convert from media time to track time*/
-			Double rescale = (Float) gf_isom_get_timescale(dest);
-			rescale /= (Float) gf_isom_get_media_timescale(dest, dst_tk);
-			/*convert from orig to dst time scale*/
-			rescale *= ts_scale;
-
-			gf_isom_set_edit_segment(dest, dst_tk, 0, (u64) (s64) (insert_dts*rescale), 0, GF_ISOM_EDIT_EMPTY);
-			gf_isom_set_edit_segment(dest, dst_tk, (u64) (s64) (insert_dts*rescale), (u64) (s64) (media_dur*rescale), 0, GF_ISOM_EDIT_NORMAL);
-		} else if (merge_edits) {
-			/*convert from media time to track time*/
-			Double rescale = (Float) gf_isom_get_timescale(dest);
-			rescale /= (Float) gf_isom_get_media_timescale(dest, dst_tk);
-			/*convert from orig to dst time scale*/
-			rescale *= ts_scale;
-
-			/*get the first edit normal mode and add the new track dur*/
-			for (j=nb_edits; j>0; j--) {
-				u64 editTime, segmentDuration, mediaTime;
-				u8 editMode;
-				gf_isom_get_edit_segment(dest, dst_tk, j, &editTime, &segmentDuration, &mediaTime, &editMode);
-
-				if (editMode==GF_ISOM_EDIT_NORMAL) {
-					Double prev_dur = (Double) (s64) dest_track_dur_before_cat;
-					Double dur = (Double) (s64) gf_isom_get_media_duration(orig, i+1);
-
-					dur *= rescale;
-					prev_dur *= rescale;
-
-					/*safety test: some files have broken edit lists. If no more than 2 entries, check that the segment duration
-					is less or equal to the movie duration*/
-					if (prev_dur < segmentDuration) {
-						fprintf(stderr, "Warning: suspicious edit list entry found: duration %g sec but longest track duration before cat is %g - fixing it\n", (Double) (s64) segmentDuration/1000.0, prev_dur/1000);
-						segmentDuration = (u64) (s64) ( (Double) (s64) (dest_track_dur_before_cat - mediaTime) * rescale );
+				if (orig_encrypted) {
+					e = gf_isom_copy_cenc_sample_auxiliary_info(dest, dst_tk, orig, i+1, j+1, samp->dataLength,
+																use_encryption_subsamples, has_seig);
+					if (e) goto err_exit;
+				} else {
+					if (dest_encrypted) {
+						e = gf_isom_cenc_add_clear_sample(dest, dst_tk, j+1, samp->dataLength,
+														  use_encryption_subsamples, has_seig);
+						if (e) goto err_exit;
 					}
-
-					segmentDuration += (u64) (s64) dur;
-					gf_isom_modify_edit_segment(dest, dst_tk, j, segmentDuration, mediaTime, editMode);
-					break;
 				}
+
+				gf_isom_sample_del(&samp);
+				if (e) goto err_exit;
+
+				gf_set_progress("Appending", nb_done, nb_samp);
+				nb_done++;
 			}
-		} else {
-			u64 editTime, segmentDuration, mediaTime, edit_offset;
-			Double t;
-			u8 editMode;
-			u32 j, count;
+			/*scene description and text: compute last sample duration based on original media duration*/
+			if (!use_ts_dur) {
+				insert_dts = gf_isom_get_media_duration(orig, i+1) - last_DTS;
+				gf_isom_set_last_sample_duration(dest, dst_tk, (u32) insert_dts);
+			}
 
-			count = gf_isom_get_edit_segment_count(dest, dst_tk);
-			if (count) {
-				e = gf_isom_get_edit_segment(dest, dst_tk, count, &editTime, &segmentDuration, &mediaTime, &editMode);
-				if (e) {
-					fprintf(stderr, "Error: edit segment error on destination track %u could not be retrieved.\n", dst_tk);
-					goto err_exit;
-				}
-			} else if (gf_isom_get_edit_segment_count(orig, i+1)) {
-				/*fake empty edit segment*/
+			if (new_track && insert_dts) {
+				u64 media_dur = gf_isom_get_media_duration(orig, i+1);
 				/*convert from media time to track time*/
 				Double rescale = (Float) gf_isom_get_timescale(dest);
 				rescale /= (Float) gf_isom_get_media_timescale(dest, dst_tk);
-				segmentDuration = (u64) (dest_track_dur_before_cat * rescale);
-				editTime = 0;
-				mediaTime = 0;
-				gf_isom_set_edit_segment(dest, dst_tk, editTime, segmentDuration, mediaTime, GF_ISOM_EDIT_NORMAL);
-			} else {
-				editTime = 0;
-				segmentDuration = 0;
-			}
+				/*convert from orig to dst time scale*/
+				rescale *= ts_scale;
 
-			/*convert to dst time scale*/
-			ts_scale = (Float) gf_isom_get_timescale(dest);
-			ts_scale /= (Float) gf_isom_get_timescale(orig);
+				gf_isom_set_edit_segment(dest, dst_tk, 0, (u64) (s64) (insert_dts*rescale), 0, GF_ISOM_EDIT_EMPTY);
+				gf_isom_set_edit_segment(dest, dst_tk, (u64) (s64) (insert_dts*rescale), (u64) (s64) (media_dur*rescale), 0, GF_ISOM_EDIT_NORMAL);
+			} else if (merge_edits) {
+				/*convert from media time to track time*/
+				Double rescale = (Float) gf_isom_get_timescale(dest);
+				rescale /= (Float) gf_isom_get_media_timescale(dest, dst_tk);
+				/*convert from orig to dst time scale*/
+				rescale *= ts_scale;
 
-			edit_offset = editTime + segmentDuration;
-			count = gf_isom_get_edit_segment_count(orig, i+1);
-			for (j=0; j<count; j++) {
-				gf_isom_get_edit_segment(orig, i+1, j+1, &editTime, &segmentDuration, &mediaTime, &editMode);
-				t = (Double) (s64) editTime;
-				t *= ts_scale;
-				t += (s64) edit_offset;
-				editTime = (s64) t;
-				t = (Double) (s64) segmentDuration;
-				t *= ts_scale;
-				segmentDuration = (s64) t;
-				t = (Double) (s64) mediaTime;
-				t *= ts_scale;
-				t+= (s64) dest_track_dur_before_cat;
-				mediaTime = (s64) t;
-				if ((editMode == GF_ISOM_EDIT_EMPTY) && (mediaTime > 0)) {
-					editMode = GF_ISOM_EDIT_NORMAL;
+				/*get the first edit normal mode and add the new track dur*/
+				for (j=nb_edits; j>0; j--) {
+					u64 editTime, segmentDuration, mediaTime;
+					u8 editMode;
+					gf_isom_get_edit_segment(dest, dst_tk, j, &editTime, &segmentDuration, &mediaTime, &editMode);
+
+					if (editMode==GF_ISOM_EDIT_NORMAL) {
+						Double prev_dur = (Double) (s64) dest_track_dur_before_cat;
+						Double dur = (Double) (s64) gf_isom_get_media_duration(orig, i+1);
+
+						dur *= rescale;
+						prev_dur *= rescale;
+
+						/*safety test: some files have broken edit lists. If no more than 2 entries, check that the segment duration
+						is less or equal to the movie duration*/
+						if (prev_dur < segmentDuration) {
+							fprintf(stderr, "Warning: suspicious edit list entry found: duration %g sec but longest track duration before cat is %g - fixing it\n", (Double) (s64) segmentDuration/1000.0, prev_dur/1000);
+							segmentDuration = (u64) (s64) ( (Double) (s64) (dest_track_dur_before_cat - mediaTime) * rescale );
+						}
+
+						segmentDuration += (u64) (s64) dur;
+						gf_isom_modify_edit_segment(dest, dst_tk, j, segmentDuration, mediaTime, editMode);
+						break;
+					}
 				}
-				gf_isom_set_edit_segment(dest, dst_tk, editTime, segmentDuration, mediaTime, editMode);
-			}
-		}
-		gf_media_update_bitrate(dest, dst_tk);
+			} else {
+				u64 editTime, segmentDuration, mediaTime, edit_offset;
+				Double t;
+				u8 editMode;
+				u32 j, count;
 
+				count = gf_isom_get_edit_segment_count(dest, dst_tk);
+				if (count) {
+					e = gf_isom_get_edit_segment(dest, dst_tk, count, &editTime, &segmentDuration, &mediaTime, &editMode);
+					if (e) {
+						fprintf(stderr, "Error: edit segment error on destination track %u could not be retrieved.\n", dst_tk);
+						goto err_exit;
+					}
+				} else if (gf_isom_get_edit_segment_count(orig, i+1)) {
+					/*fake empty edit segment*/
+					/*convert from media time to track time*/
+					Double rescale = (Float) gf_isom_get_timescale(dest);
+					rescale /= (Float) gf_isom_get_media_timescale(dest, dst_tk);
+					segmentDuration = (u64) (dest_track_dur_before_cat * rescale);
+					editTime = 0;
+					mediaTime = 0;
+					gf_isom_set_edit_segment(dest, dst_tk, editTime, segmentDuration, mediaTime, GF_ISOM_EDIT_NORMAL);
+				} else {
+					editTime = 0;
+					segmentDuration = 0;
+				}
+
+				/*convert to dst time scale*/
+				ts_scale = (Float) gf_isom_get_timescale(dest);
+				ts_scale /= (Float) gf_isom_get_timescale(orig);
+
+				edit_offset = editTime + segmentDuration;
+				count = gf_isom_get_edit_segment_count(orig, i+1);
+				for (j=0; j<count; j++) {
+					gf_isom_get_edit_segment(orig, i+1, j+1, &editTime, &segmentDuration, &mediaTime, &editMode);
+					t = (Double) (s64) editTime;
+					t *= ts_scale;
+					t += (s64) edit_offset;
+					editTime = (s64) t;
+					t = (Double) (s64) segmentDuration;
+					t *= ts_scale;
+					segmentDuration = (s64) t;
+					t = (Double) (s64) mediaTime;
+					t *= ts_scale;
+					t+= (s64) dest_track_dur_before_cat;
+					mediaTime = (s64) t;
+					if ((editMode == GF_ISOM_EDIT_EMPTY) && (mediaTime > 0)) {
+						editMode = GF_ISOM_EDIT_NORMAL;
+					}
+					gf_isom_set_edit_segment(dest, dst_tk, editTime, segmentDuration, mediaTime, editMode);
+				}
+			}
+			gf_media_update_bitrate(dest, dst_tk);
+		}
 	}
 	gf_set_progress("Appending", nb_samp, nb_samp);
 

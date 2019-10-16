@@ -5945,6 +5945,101 @@ GF_Err gf_isom_copy_sample_info(GF_ISOFile *dst, u32 dst_track, GF_ISOFile *src,
 }
 
 GF_EXPORT
+GF_Err gf_isom_cenc_add_clear_sample(GF_ISOFile *dst, u32 dst_track, u32 sampleNumber, u32 sampleLength, Bool use_subsamples, Bool has_seig)
+{
+	u32 dst_sample_num;
+	GF_Err e;
+	GF_TrackBox *dst_trak;
+
+	u32 container_type, Is_Encrypted;
+	u8 IV_size;
+	bin128 KID;
+	u8 crypt_byte_block, skip_byte_block;
+	u8 constant_IV_size;
+	bin128 constant_IV;
+
+	dst_trak = gf_isom_get_track_from_file(dst, dst_track);
+	if (!dst_trak) return GF_BAD_PARAM;
+
+	dst_sample_num = dst_trak->Media->information->sampleTable->SampleSize->sampleCount;
+
+	e = gf_isom_cenc_get_sample_aux_info(dst, dst_track, sampleNumber, NULL, &container_type);
+	if (e) goto exit;
+
+	e = gf_isom_get_sample_cenc_info(dst, dst_track, sampleNumber, &Is_Encrypted, &IV_size, &KID, &crypt_byte_block, &skip_byte_block, &constant_IV_size, &constant_IV);
+	if (e) goto exit;
+
+	e = gf_isom_track_cenc_add_sample_info(dst, dst_track, container_type, IV_size, NULL, sampleLength, use_subsamples, NULL);
+	if (e) goto exit;
+
+	if (has_seig) {
+		e = gf_isom_set_sample_cenc_group(dst, dst_track, dst_sample_num, Is_Encrypted, IV_size, KID, crypt_byte_block, skip_byte_block, constant_IV_size, constant_IV);
+	}
+
+exit:
+	return e;
+}
+
+GF_EXPORT
+GF_Err gf_isom_copy_cenc_sample_auxiliary_info(GF_ISOFile *dst, u32 dst_track, GF_ISOFile *src, u32 src_track, u32 sampleNumber, u32 sampleLength, Bool use_subsamples, Bool has_seig)
+{
+	u32 dst_sample_num;
+	GF_CENCSampleAuxInfo *sai = NULL;
+	GF_Err e;
+	GF_TrackBox *src_trak, *dst_trak;
+
+	u32 container_type, len, j, Is_Encrypted;
+	u8 IV_size;
+	bin128 KID;
+	u8 crypt_byte_block, skip_byte_block;
+	u8 constant_IV_size;
+	bin128 constant_IV;
+	GF_BitStream *bs;
+	char *buffer;
+
+	src_trak = gf_isom_get_track_from_file(src, src_track);
+	if (!src_trak) return GF_BAD_PARAM;
+
+	dst_trak = gf_isom_get_track_from_file(dst, dst_track);
+	if (!dst_trak) return GF_BAD_PARAM;
+
+	dst_sample_num = dst_trak->Media->information->sampleTable->SampleSize->sampleCount;
+
+	e = gf_isom_cenc_get_sample_aux_info(src, src_track, sampleNumber, &sai, &container_type);
+	if (e) goto exit;
+
+	e = gf_isom_get_sample_cenc_info(src, src_track, sampleNumber, &Is_Encrypted, &IV_size, &KID, &crypt_byte_block, &skip_byte_block, &constant_IV_size, &constant_IV);
+	if (e) goto exit;
+
+	if (Is_Encrypted) {
+		bs = gf_bs_new(NULL, 0, GF_BITSTREAM_WRITE);
+		gf_bs_write_data(bs, (const char *)sai->IV, IV_size);
+		if (sai->subsample_count) {
+			gf_bs_write_u16(bs, sai->subsample_count);
+			for (j = 0; j < sai->subsample_count; j++) {
+				gf_bs_write_u16(bs, sai->subsamples[j].bytes_clear_data);
+				gf_bs_write_u32(bs, sai->subsamples[j].bytes_encrypted_data);
+			}
+		}
+		gf_bs_get_content(bs, &buffer, &len);
+		gf_bs_del(bs);
+		e = gf_isom_track_cenc_add_sample_info(dst, dst_track, container_type, IV_size, buffer, len, use_subsamples, NULL);
+		gf_free(buffer);
+	} else {
+		e = gf_isom_track_cenc_add_sample_info(dst, dst_track, container_type, IV_size, NULL, sampleLength, use_subsamples, NULL);
+	}
+	if (e) goto exit;
+
+	if (has_seig) {
+		e = gf_isom_set_sample_cenc_group(dst, dst_track, dst_sample_num, Is_Encrypted, IV_size, KID, crypt_byte_block, skip_byte_block, constant_IV_size, constant_IV);
+	}
+
+exit:
+	if (sai) gf_isom_cenc_samp_aux_info_del(sai);
+	return e;
+}
+
+GF_EXPORT
 GF_Err gf_isom_text_set_display_flags(GF_ISOFile *file, u32 track, u32 desc_index, u32 flags, GF_TextFlagsMode op_type)
 {
 	u32 i;

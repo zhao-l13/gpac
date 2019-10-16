@@ -1377,6 +1377,7 @@ GF_Err senc_Parse(GF_BitStream *bs, GF_TrackBox *trak, void *traf, GF_SampleEncr
 				for (j = 0; j < sai->subsample_count; j++) {
 					if (gf_bs_get_size(bs) - gf_bs_get_position(bs) < 6) {
 						gf_isom_cenc_samp_aux_info_del(sai);
+						GF_LOG(GF_LOG_ERROR, GF_LOG_CONTAINER, ("[isobmf] error parsing senc box\n"));
 						return GF_ISOM_INVALID_FILE;
 					}
 					sai->subsamples[j].bytes_clear_data = gf_bs_read_u16(bs);

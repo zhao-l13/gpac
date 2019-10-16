@@ -1308,6 +1308,8 @@ GF_Err gf_isom_cenc_get_sample_aux_info(GF_ISOFile *the_file, u32 trackNumber, u
 		}
 
 		if (container_type) *container_type = type;
+	} else {
+		if (container_type) *container_type = 0;
 	}
 
 	if (!sai) return GF_OK; /*we need only container_type*/
