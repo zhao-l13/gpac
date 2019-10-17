@@ -5,7 +5,7 @@
  *			Copyright (c) Telecom ParisTech 2017-2019
  *					All rights reserved
  *
- *  This file is part of GPAC 
+ *  This file is part of GPAC
  *
  *  GPAC is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU Lesser General Public License as published by
@@ -34,7 +34,7 @@ extern "C" {
 \file <gpac/main.h>
 \brief main() macro for win32.
  */
-	
+
 /*!
 \addtogroup sysmain_grp
 @{

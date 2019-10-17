@@ -77,7 +77,7 @@ GLDECL(void, glVertexAttribIPointer, (GLuint  index, GLint  wsize, GLenum  type,
 
 #define TEXTURE_TYPE GL_TEXTURE_2D
 
-#ifdef WIN32
+#if defined(WIN32) && !defined(__GNUC__)
 GLDECL_FUNC_STATIC(glActiveTexture);
 GLDECL_FUNC_STATIC(glClientActiveTexture);
 GLDECL_FUNC_STATIC(glCreateProgram);
@@ -2159,7 +2159,7 @@ static GF_Err vout_process(GF_Filter *filter)
 			} else {
 				diff = 0;
 			}
-			
+
 			if (ctx->timescale != 1000000)
 				ref_clock = diff * ctx->timescale / 1000000 + cts;
 			else
